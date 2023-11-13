@@ -1,49 +1,42 @@
-#linux-run.sh LINUX_USER_PASSWORD NGROK_AUTH_TOKEN LINUX_USERNAME LINUX_MACHINE_NAME
-#!/bin/bash
-# /home/runner/.ngrok2/ngrok.yml
+# Use kalilinux/kali-rolling as the base image
+FROM kalilinux/kali-rolling
 
-sudo useradd -m $LINUX_USERNAME
-sudo adduser $LINUX_USERNAME sudo
-echo "$LINUX_USERNAME:$LINUX_USER_PASSWORD" | sudo chpasswd
-sed -i 's/\/bin\/sh/\/bin\/bash/g' /etc/passwd
-sudo hostname $LINUX_MACHINE_NAME
+# Update packages and install locales
+RUN apt update -y > /dev/null 2>&1 && apt upgrade -y > /dev/null 2>&1 && apt install locales -y \
+&& localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
 
-if [[ -z "$NGROK_AUTH_TOKEN" ]]; then
-  echo "Please set 'NGROK_AUTH_TOKEN'"
-  exit 2
-fi
+# Set locale to en_US.utf8
+ENV LANG en_US.utf8
 
-if [[ -z "$LINUX_USER_PASSWORD" ]]; then
-  echo "Please set 'LINUX_USER_PASSWORD' for user: $USER"
-  exit 3
-fi
+# Define arguments and environment variables
+ARG NGROK_TOKEN
+ARG Password
+ENV Password=${Password}
+ENV NGROK_TOKEN=${NGROK_TOKEN}
 
-echo "### Install ngrok ###"
+# Install ssh, wget, and unzip
+RUN apt install ssh wget unzip -y > /dev/null 2>&1
 
-wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-386.zip
-unzip ngrok-stable-linux-386.zip
-chmod +x ./ngrok
+# Download and unzip ngrok
+RUN wget -O ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.zip > /dev/null 2>&1
+RUN unzip ngrok.zip
 
-echo "### Update user: $USER password ###"
-echo -e "$LINUX_USER_PASSWORD\n$LINUX_USER_PASSWORD" | sudo passwd "$USER"
-
-echo "### Start ngrok proxy for 22 port ###"
+# Create shell script
+RUN echo "./ngrok config add-authtoken ${NGROK_TOKEN} &&" >>/kali.sh
+RUN echo "./ngrok tcp 22 &>/dev/null &" >>/kali.sh
 
 
-rm -f .ngrok.log
-./ngrok authtoken "$NGROK_AUTH_TOKEN"
-./ngrok tcp 22 --log ".ngrok.log" &
+# Create directory for SSH daemon's runtime files
+RUN mkdir /run/sshd
+RUN echo '/usr/sbin/sshd -D' >>/kali.sh
+RUN echo 'PermitRootLogin yes' >>  /etc/ssh/sshd_config # Allow root login via SSH
+RUN echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config  # Allow password authentication
+RUN echo root:${Password}|chpasswd # Set root password
+RUN service ssh start
+RUN chmod 755 /kali.sh
 
-sleep 10
-HAS_ERRORS=$(grep "command failed" < .ngrok.log)
+# Expose port
+EXPOSE 80 8888 8080 443 5130 5131 5132 5133 5134 5135 3306
 
-if [[ -z "$HAS_ERRORS" ]]; then
-  echo ""
-  echo "=========================================="
-  echo "To connect: $(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\//ssh $USER@/" | sed "s/:/ -p /")"
-  echo "or conenct with $(grep -o -E "tcp://(.+)" < .ngrok.log | sed "s/tcp:\/\//ssh (Your Linux Username)@/" | sed "s/:/ -p /")"
-  echo "=========================================="
-else
-  echo "$HAS_ERRORS"
-  exit 4
-fi
+# Start the shell script on container startup
+CMD  /kali.sh
